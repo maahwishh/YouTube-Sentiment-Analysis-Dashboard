@@ -161,8 +161,6 @@ if video_url:
             plt.figure(figsize=(4, 4))
             sns.barplot(x=sentiment_counts.index, y=sentiment_counts.values, palette='Set2')
             plt.title("Number of Comments per Sentiment")
-            plt.ylabel('Count')
-            plt.xlabel('Sentiment')
             st.pyplot(plt)
         
         # Sentiment Split Pie Chart
