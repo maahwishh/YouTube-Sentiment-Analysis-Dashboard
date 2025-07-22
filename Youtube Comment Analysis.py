@@ -389,51 +389,51 @@ def detect_spam(comment):
     return 'Spam' if prediction[0] == 1 else 'Not Spam'
 
 
-    # ---- Apply the new spam detection on YouTube comments ----
-    # ---- Section Header ----
-    st.subheader('🚩 Detected Spam Comments')
-    if 'df' in locals():
-        df['Spam'] = df['Comment'].apply(detect_spam)
+# ---- Apply the new spam detection on YouTube comments ----
+# ---- Section Header ----
+st.subheader('🚩 Detected Spam Comments')
+if 'df' in locals():
+    df['Spam'] = df['Comment'].apply(detect_spam)
+
+    # ---- Create two-column layout ----
+    col1, col2 = st.columns(2)
     
-        # ---- Create two-column layout ----
-        col1, col2 = st.columns(2)
+    # ---- Display Spam Comments in Column 1 ----
+    with col1:
+        # ---- Display Spam Comments ----
+        spam_comments = df[df['Spam'] == 'Spam']
         
-        # ---- Display Spam Comments in Column 1 ----
-        with col1:
-            # ---- Display Spam Comments ----
-            spam_comments = df[df['Spam'] == 'Spam']
-            
-            if not spam_comments.empty:
-                st.markdown("### 🚫 Spam Comments and Usernames")
-                st.dataframe(spam_comments[['User', 'Comment']], use_container_width=True)
-            else:
-                st.success("No spam comments detected! 🎉")
-        
-        # ---- Display Top Spam Commenters in Column 2 ----
-        with col2:
-            st.subheader('🏆 Top Spam Commenters')
-            
-            if not spam_comments.empty:
-                # ---- Top Spam Commenters ----
-                top_spammers = spam_comments['User'].value_counts().head(10).reset_index()
-                top_spammers.columns = ['Username', 'Spam Count']
-                st.dataframe(top_spammers, use_container_width=True)
-            else:
-                st.success("No spammers found! 🎉")
-            # ---- Create a new container for the visualization ----
-        st.markdown("---")  # Line separator for better visibility
-        vis_col1, vis_col2 = st.columns(2)
+        if not spam_comments.empty:
+            st.markdown("### 🚫 Spam Comments and Usernames")
+            st.dataframe(spam_comments[['User', 'Comment']], use_container_width=True)
+        else:
+            st.success("No spam comments detected! 🎉")
     
-        # ---- Visualization in Left Column ----
-        with vis_col1:
-            st.markdown("### 📊 Spam Detection Overview")
-            spam_counts = df['Spam'].value_counts()
-            fig, ax = plt.subplots(figsize=(5, 4))
-            sns.barplot(x=spam_counts.index, y=spam_counts.values, palette='Reds')
-            plt.title("Spam Detection Overview")
-            plt.ylabel('Number of Comments')
-            plt.xlabel('Comment Type')
-            st.pyplot(fig)
+    # ---- Display Top Spam Commenters in Column 2 ----
+    with col2:
+        st.subheader('🏆 Top Spam Commenters')
         
-    else:
-        st.error('Invalid YouTube URL')
+        if not spam_comments.empty:
+            # ---- Top Spam Commenters ----
+            top_spammers = spam_comments['User'].value_counts().head(10).reset_index()
+            top_spammers.columns = ['Username', 'Spam Count']
+            st.dataframe(top_spammers, use_container_width=True)
+        else:
+            st.success("No spammers found! 🎉")
+        # ---- Create a new container for the visualization ----
+    st.markdown("---")  # Line separator for better visibility
+    vis_col1, vis_col2 = st.columns(2)
+
+    # ---- Visualization in Left Column ----
+    with vis_col1:
+        st.markdown("### 📊 Spam Detection Overview")
+        spam_counts = df['Spam'].value_counts()
+        fig, ax = plt.subplots(figsize=(5, 4))
+        sns.barplot(x=spam_counts.index, y=spam_counts.values, palette='Reds')
+        plt.title("Spam Detection Overview")
+        plt.ylabel('Number of Comments')
+        plt.xlabel('Comment Type')
+        st.pyplot(fig)
+    
+else:
+    st.error('Invalid YouTube URL')
