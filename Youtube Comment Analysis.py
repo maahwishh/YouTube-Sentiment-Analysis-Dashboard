@@ -1,75 +1,61 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[ ]:
+import sys
+import subprocess
+from googleapiclient.discovery import build
 import streamlit as st
-import pandas as pd
-import re
 from collections import Counter
-import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
-
-# Try to import optional packages with fallbacks
-try:
-    from googleapiclient.discovery import build
-    YOUTUBE_API_AVAILABLE = True
-except ImportError:
-    st.error("Google API client not available. Please install: pip install google-api-python-client")
-    YOUTUBE_API_AVAILABLE = False
-
-try:
-    import nltk
-    from nltk.sentiment import SentimentIntensityAnalyzer
-    from nltk.corpus import stopwords
-    # Download required NLTK data quietly
-    try:
-        nltk.data.find('vader_lexicon')
-    except LookupError:
-        nltk.download('vader_lexicon', quiet=True)
-    try:
-        nltk.data.find('corpora/stopwords')
-    except LookupError:
-        nltk.download('stopwords', quiet=True)
-    NLTK_AVAILABLE = True
-except ImportError:
-    st.warning("NLTK not available. Using basic sentiment analysis.")
-    NLTK_AVAILABLE = False
-
-try:
-    from wordcloud import WordCloud
-    WORDCLOUD_AVAILABLE = True
-except ImportError:
-    st.warning("WordCloud not available. Word clouds will be skipped.")
-    WORDCLOUD_AVAILABLE = False
-
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.naive_bayes import MultinomialNB
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    st.warning("Scikit-learn not available. Advanced spam detection will be disabled.")
-    SKLEARN_AVAILABLE = False
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import nltk
+from nltk.corpus import stopwords
+nltk.download('stopwords')
+import re
+import joblib
+import os
+import numpy as np
+from nltk.sentiment import SentimentIntensityAnalyzer
+nltk.download('vader_lexicon')
 
 # Initialize Streamlit App
 st.set_page_config(page_title='Vibes Pie - YouTube Sentiment Analysis', layout='wide')
 st.title('Vibes Pie - YouTube Sentiment Analysis Dashboard')
 st.write('Unmasking the true sentiments through comments!')
 
-# Configuration
+# YouTube API Key and Configurations
 API_KEY = 'AIzaSyD5-RtE9nM-wgOXCSnQsmz6CuN4dnDJ7bE'  # Replace with your own YouTube API Key
+youtube = build('youtube', 'v3', developerKey=API_KEY)
 
-# Initialize YouTube API if available
-if YOUTUBE_API_AVAILABLE:
-    try:
-        youtube = build('youtube', 'v3', developerKey=API_KEY)
-    except Exception as e:
-        st.error(f"Failed to initialize YouTube API: {e}")
-        YOUTUBE_API_AVAILABLE = False
+# User Input for YouTube Video URL
+video_url = st.text_input('Enter YouTube Video URL:', '')
 
-# Function Definitions
+# Button to fetch comments
+if st.button("Fetch Comments"):
+    if video_url:  # Only proceed if there is input
+        video_id = extract_video_id(video_url)
+        if video_id:
+            st.success(f'Video ID extracted: {video_id}')
+            # Proceed with fetching comments
+            df = get_youtube_comments(video_id)
+            if not df.empty:
+                st.success("Comments fetched successfully!")
+            else:
+                st.error("No comments found for this video.")
+        else:
+            st.error('Invalid YouTube URL')
+    else:
+        st.warning('Please enter a YouTube URL.')
+
+# Extract Video ID
 def extract_video_id(url):
-    """Extract video ID from YouTube URL"""
+    print(f"URL entered: {url}")  # Debugging line
     patterns = [
         r'v=([0-9A-Za-z_-]{11})',
         r'\/([0-9A-Za-z_-]{11})',
@@ -79,80 +65,61 @@ def extract_video_id(url):
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
-            return match.group(1)
+            video_id = match.group(1)
+            print(f"Video ID extracted: {video_id}")
+            return video_id
+    print("Video ID extraction failed.")  # Debugging line
     return None
 
+# Fetch YouTube Comments with Username
 def get_youtube_comments(video_id):
-    """Fetch YouTube Comments with Username"""
-    if not YOUTUBE_API_AVAILABLE:
-        st.error("YouTube API not available")
-        return pd.DataFrame()
-    
     comments = []
     timestamps = []
     users = []
+    request = youtube.commentThreads().list(
+        part='snippet', 
+        videoId=video_id, 
+        textFormat='plainText', 
+        maxResults=100
+    )
     
-    try:
-        request = youtube.commentThreads().list(
-            part='snippet', 
-            videoId=video_id,
-            textFormat='plainText',
-            maxResults=100
-        )
-        
-        response = request.execute()
-        
-        for item in response['items']:
-            comments.append(item['snippet']['topLevelComment']['snippet']['textDisplay'])
-            timestamps.append(item['snippet']['topLevelComment']['snippet']['publishedAt'])
-            users.append(item['snippet']['topLevelComment']['snippet']['authorDisplayName'])
-            
-        return pd.DataFrame({
-            'User': users, 
-            'Comment': comments, 
-            'Timestamp': pd.to_datetime(timestamps)
-        })
-    except Exception as e:
-        st.error(f"Error fetching comments: {str(e)}")
-        return pd.DataFrame()
+    response = request.execute()
+    
+    for item in response['items']:
+        comments.append(item['snippet']['topLevelComment']['snippet']['textDisplay'])
+        timestamps.append(item['snippet']['topLevelComment']['snippet']['publishedAt'])
+        users.append(item['snippet']['topLevelComment']['snippet']['authorDisplayName'])  # Fetch username
+    
+    return pd.DataFrame({'User': users, 'Comment': comments, 'Timestamp': pd.to_datetime(timestamps)})
 
+# Data Preprocessing
 def preprocess_text(text):
-    """Basic text preprocessing"""
-    text = str(text).lower()
-    text = re.sub(r'http\S+', '', text)  # Remove URLs
-    text = re.sub(r'[^a-zA-Z\s]', '', text)  # Keep only letters and spaces
-    
-    # Basic stopword removal if NLTK is available
-    if NLTK_AVAILABLE:
-        try:
-            stop_words = set(stopwords.words('english'))
-            text = ' '.join(word for word in text.split() if word not in stop_words)
-        except:
-            pass  # If stopwords fail, continue without them
-    
+    text = text.lower()
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    text = ' '.join(word for word in text.split() if word not in stopwords.words('english'))
     return text
 
-def detect_sentiment_basic(comment):
-    """Basic sentiment analysis without NLTK"""
-    positive_words = ['good', 'great', 'awesome', 'amazing', 'excellent', 'love', 'like', 'best', 'wonderful', 'fantastic']
-    negative_words = ['bad', 'terrible', 'awful', 'hate', 'worst', 'horrible', 'disgusting', 'stupid', 'boring', 'sucks']
-    
-    comment_lower = comment.lower()
-    positive_count = sum(1 for word in positive_words if word in comment_lower)
-    negative_count = sum(1 for word in negative_words if word in comment_lower)
-    
-    if positive_count > negative_count:
-        return 'Positive'
-    elif negative_count > positive_count:
-        return 'Negative'
-    else:
-        return 'Neutral'
+# Main Logic
+if video_url:
+    video_id = extract_video_id(video_url)
+    if video_id:
+        st.success(f'Video ID extracted: {video_id}')
+        df = get_youtube_comments(video_id)
+        df['Processed_Comment'] = df['Comment'].apply(preprocess_text)
 
-def detect_sentiment(comment):
-    """Sentiment analysis with fallback"""
-    if NLTK_AVAILABLE:
-        try:
-            sia = SentimentIntensityAnalyzer()
+        # Sentiment Analysis
+        vectorizer = TfidfVectorizer(max_features=5000)
+        X = vectorizer.fit_transform(df['Processed_Comment'])
+        model = SVC(kernel='linear')
+        model.fit(X, ['Positive' if i % 2 == 0 else 'Negative' for i in range(len(df))])
+        df['Sentiment'] = model.predict(X)
+            
+        # Initialize VADER
+        sia = SentimentIntensityAnalyzer()
+        
+        # Function to determine sentiment
+        def detect_sentiment(comment):
             score = sia.polarity_scores(comment)
             if score['compound'] > 0.05:
                 return 'Positive'
@@ -160,179 +127,313 @@ def detect_sentiment(comment):
                 return 'Negative'
             else:
                 return 'Neutral'
-        except:
-            pass
-    
-    # Fallback to basic sentiment analysis
-    return detect_sentiment_basic(comment)
-
-def detect_spam_basic(comment):
-    """Basic spam detection without machine learning"""
-    spam_indicators = [
-        'subscribe', 'follow me', 'check out my', 'visit my channel', 
-        'click here', 'free money', 'make money', 'earn money',
-        'http', 'www.', '.com', 'link in bio'
-    ]
-    
-    comment_lower = comment.lower()
-    spam_count = sum(1 for indicator in spam_indicators if indicator in comment_lower)
-    
-    # Simple heuristic: if comment has multiple spam indicators or is very short with spam words
-    if spam_count >= 2 or (len(comment.split()) <= 5 and spam_count >= 1):
-        return 'Spam'
-    return 'Not Spam'
-
-# Main App Interface
-st.sidebar.header("Configuration")
-if not YOUTUBE_API_AVAILABLE:
-    st.sidebar.error("YouTube API not configured properly")
-else:
-    st.sidebar.success("YouTube API ready")
-
-# User Input
-video_url = st.text_input('Enter YouTube Video URL:', placeholder='https://www.youtube.com/watch?v=...')
-
-# Only show analysis if URL is provided
-if video_url:
-    if st.button("Analyze Comments", type="primary"):
-        video_id = extract_video_id(video_url)
         
-        if video_id:
-            st.success(f'✅ Video ID extracted: {video_id}')
-            
-            # Fetch comments
-            with st.spinner('Fetching comments from YouTube...'):
-                df = get_youtube_comments(video_id)
-            
-            if not df.empty:
-                st.success(f"📊 Successfully fetched {len(df)} comments!")
-                
-                # Preprocess comments
-                with st.spinner('Processing comments...'):
-                    df['Processed_Comment'] = df['Comment'].apply(preprocess_text)
-                    df['Sentiment'] = df['Processed_Comment'].apply(detect_sentiment)
-                    df['Spam'] = df['Comment'].apply(detect_spam_basic)
-                
-                # Display results
-                st.header("📈 Analysis Results")
-                
-                # Sentiment Overview
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("Sentiment Distribution")
-                    sentiment_counts = df['Sentiment'].value_counts()
-                    
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    colors = ['#2E8B57', '#FF6B6B', '#4ECDC4']  # Green, Red, Teal
-                    sentiment_counts.plot(kind='bar', ax=ax, color=colors)
-                    plt.title('Comment Sentiments')
-                    plt.xlabel('Sentiment')
-                    plt.ylabel('Count')
-                    plt.xticks(rotation=45)
-                    st.pyplot(fig)
-                
-                with col2:
-                    st.subheader("Sentiment Pie Chart")
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    plt.pie(sentiment_counts.values, labels=sentiment_counts.index, 
-                           autopct='%1.1f%%', colors=colors)
-                    plt.title('Sentiment Distribution')
-                    st.pyplot(fig)
-                
-                # Comments Analysis
-                st.subheader("📝 Comment Analysis")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**Top Positive Comments:**")
-                    positive_comments = df[df['Sentiment'] == 'Positive']['Comment'].head(5)
-                    for i, comment in enumerate(positive_comments, 1):
-                        st.write(f"{i}. {comment[:100]}...")
-                
-                with col2:
-                    st.write("**Top Negative Comments:**")
-                    negative_comments = df[df['Sentiment'] == 'Negative']['Comment'].head(5)
-                    for i, comment in enumerate(negative_comments, 1):
-                        st.write(f"{i}. {comment[:100]}...")
-                
-                # Word Analysis
-                st.subheader("🔤 Most Common Words")
-                all_words = ' '.join(df['Processed_Comment']).split()
-                word_freq = Counter(all_words).most_common(20)
-                
-                if word_freq:
-                    word_df = pd.DataFrame(word_freq, columns=['Word', 'Frequency'])
-                    
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    sns.barplot(data=word_df.head(10), x='Frequency', y='Word', palette='viridis')
-                    plt.title('Top 10 Most Common Words')
-                    st.pyplot(fig)
-                
-                # Spam Detection Results
-                st.subheader("🚩 Spam Detection")
-                spam_counts = df['Spam'].value_counts()
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    spam_counts.plot(kind='bar', ax=ax, color=['#90EE90', '#FFB6C1'])
-                    plt.title('Spam vs Non-Spam Comments')
-                    plt.xlabel('Comment Type')
-                    plt.ylabel('Count')
-                    plt.xticks(rotation=45)
-                    st.pyplot(fig)
-                
-                with col2:
-                    spam_comments = df[df['Spam'] == 'Spam']
-                    if not spam_comments.empty:
-                        st.write("**Detected Spam Comments:**")
-                        for comment in spam_comments['Comment'].head(3):
-                            st.write(f"• {comment[:80]}...")
-                    else:
-                        st.success("🎉 No spam comments detected!")
-                
-                # Time Series Analysis
-                if 'Timestamp' in df.columns:
-                    st.subheader("📅 Timeline Analysis")
-                    df['Date'] = df['Timestamp'].dt.date
-                    daily_sentiments = df.groupby(['Date', 'Sentiment']).size().unstack(fill_value=0)
-                    
-                    if not daily_sentiments.empty:
-                        st.line_chart(daily_sentiments)
-                
-                # Summary Statistics
-                st.subheader("📊 Summary Statistics")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Total Comments", len(df))
-                
-                with col2:
-                    positive_pct = (sentiment_counts.get('Positive', 0) / len(df)) * 100
-                    st.metric("Positive %", f"{positive_pct:.1f}%")
-                
-                with col3:
-                    negative_pct = (sentiment_counts.get('Negative', 0) / len(df)) * 100
-                    st.metric("Negative %", f"{negative_pct:.1f}%")
-                
-                with col4:
-                    spam_pct = (spam_counts.get('Spam', 0) / len(df)) * 100
-                    st.metric("Spam %", f"{spam_pct:.1f}%")
-                
-                # Raw Data
-                with st.expander("📋 View Raw Data"):
-                    st.dataframe(df[['User', 'Comment', 'Sentiment', 'Spam', 'Timestamp']])
-                
+        # Apply sentiment detection to each comment if df exists
+        if 'df' in locals():
+            df['Sentiment'] = df['Processed_Comment'].apply(detect_sentiment)
+        
+        # Initialize VADER
+        sia = SentimentIntensityAnalyzer()
+        
+        # Function to determine sentiment
+        def detect_sentiment(comment):
+            score = sia.polarity_scores(comment)
+            if score['compound'] > 0.05:
+                return 'Positive'
+            elif score['compound'] < -0.05:
+                return 'Negative'
             else:
-                st.error("❌ No comments found for this video. The video might be private, have comments disabled, or the API quota might be exceeded.")
-        else:
-            st.error('❌ Invalid YouTube URL. Please check the URL format.')
-else:
-    st.info("👆 Please enter a YouTube URL above to start the analysis.")
+                return 'Neutral'
+        
+        # Apply sentiment detection to each comment if df exists
+        if 'df' in locals():
+            df['Sentiment'] = df['Processed_Comment'].apply(detect_sentiment)
+        
+        # Display sentiment distribution
+        st.subheader('Sentiment Analysis Overview')
+        sentiment_counts = df['Sentiment'].value_counts()
+        
+        # Creating Columns for Side by Side Display
+        col1, col2 = st.columns(2)
+        
+        # Sentiment Distribution Bar Chart
+        with col1:
+            plt.figure(figsize=(4, 4))
+            sns.barplot(x=sentiment_counts.index, y=sentiment_counts.values, palette='Set2')
+            plt.title("Number of Comments per Sentiment")
+            plt.ylabel('Count')
+            plt.xlabel('Sentiment')
+            st.pyplot(plt)
+        
+        # Sentiment Split Pie Chart
+        with col2:
+            plt.figure(figsize=(4, 4))  # Changed to square size for better look
+            plt.pie(sentiment_counts, labels=sentiment_counts.index, autopct='%1.1f%%',
+                    colors=['#66b3ff', '#99ff99', '#ff9999'])
+            plt.gca().set_aspect('equal')  # This keeps the pie chart circular
+            st.pyplot(plt)
+        
+        # Top 10 Positive and Negative Comments
+        positive_comments = df[df['Sentiment'] == 'Positive']['Comment'].head(10).reset_index(drop=True)
+        negative_comments = df[df['Sentiment'] == 'Negative']['Comment'].head(10).reset_index(drop=True)
+        
+        # Combine into a DataFrame for display
+        comments_df = pd.DataFrame({
+            "Top 10 Positive Comments": positive_comments,
+            "Top 10 Negative Comments": negative_comments
+        })
+        
+        # Creating Columns for Side by Side Display
+        col1, col2 = st.columns(2)
+        
+        # Inject custom CSS for word wrapping
+        st.markdown("""
+            <style>
+            .stDataFrame div {
+                white-space: pre-wrap;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        
+        # Display in respective columns
+        with col1:
+            st.markdown("### Top 10 Positive Comments")
+            st.dataframe(comments_df[['Top 10 Positive Comments']], use_container_width=True)
+        
+        with col2:
+            st.markdown("### Top 10 Negative Comments")
+            st.dataframe(comments_df[['Top 10 Negative Comments']], use_container_width=True)
 
-# Footer
-st.markdown("---")
-st.markdown("**Note:** This app uses basic sentiment analysis and spam detection. For more accurate results, ensure all required packages are installed.")
+
+        # Most Common Words
+        st.subheader('Most Common Words')
+        common_words = Counter(' '.join(df['Processed_Comment']).split()).most_common(20)
+        common_df = pd.DataFrame(common_words, columns=['Word', 'Frequency'])
+        st.write(common_df)
+
+        # Time-Series Analysis
+        st.subheader('Time-Series Analysis of Sentiments')
+        df['Date'] = df['Timestamp'].dt.date
+        time_series_data = df.groupby(['Date', 'Sentiment']).size().unstack(fill_value=0)
+        st.line_chart(time_series_data)
+        
+        
+        # Assuming df is already available
+        y_pred = df['Sentiment']  # assuming this column contains the sentiment predictions
+        y_true = ['Positive' if i % 3 == 0 else 'Negative' if i % 3 == 1 else 'Neutral' for i in range(len(df))]  # Placeholder
+        
+        # Generate the confusion matrix with all three classes
+        cm = confusion_matrix(y_true, y_pred, labels=['Positive', 'Negative', 'Neutral'])
+        total = cm.sum() if cm.size > 0 else 1
+        
+        # Create two columns for display
+        col1, col2 = st.columns(2)
+        
+        # Display Confusion Matrix
+        with col1:
+            st.subheader('Confusion Matrix')
+            plt.figure(figsize=(5, 4))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                        xticklabels=['Positive', 'Negative', 'Neutral'], 
+                        yticklabels=['Positive', 'Negative', 'Neutral'])
+            plt.title('Confusion Matrix')
+            st.pyplot(plt)
+        
+        # Calculate TP, FP, FN, TN for each class
+        TP = [cm[i, i] for i in range(3)]
+        FP = [cm[:, i].sum() - cm[i, i] for i in range(3)]
+        FN = [cm[i, :].sum() - cm[i, i] for i in range(3)]
+        TN = [total - (TP[i] + FP[i] + FN[i]) for i in range(3)]
+        
+        # Calculate percentages
+        TP_pct = [round((x / total) * 100, 2) for x in TP]
+        FP_pct = [round((x / total) * 100, 2) for x in FP]
+        FN_pct = [round((x / total) * 100, 2) for x in FN]
+        TN_pct = [round((x / total) * 100, 2) for x in TN]
+        
+        metrics_data = {
+            'Class': ['Positive', 'Negative', 'Neutral'],
+            'True Positive (TP)': TP,
+            'False Positive (FP)': FP,
+            'False Negative (FN)': FN,
+            'True Negative (TN)': TN,
+            'TP %': TP_pct,
+            'FP %': FP_pct,
+            'FN %': FN_pct,
+            'TN %': TN_pct
+        }
+        
+        metrics_df = pd.DataFrame(metrics_data)
+        
+        # Plot the metrics with percentage display
+        with col2:
+            st.subheader('Confusion Matrix Breakdown')
+            plt.figure(figsize=(5, 4))
+            
+            # Plotting each bar separately for better visibility
+            bar_width = 0.2
+            positions = np.arange(len(metrics_df['Class'])) if len(metrics_df) > 0 else np.array([0])
+            
+            # Bars
+            plt.bar(positions, metrics_df['True Positive (TP)'], width=bar_width, label='TP', color='green')
+            plt.bar(positions + bar_width, metrics_df['False Positive (FP)'], width=bar_width, label='FP', color='red')
+            plt.bar(positions + bar_width * 2, metrics_df['False Negative (FN)'], width=bar_width, label='FN', color='orange')
+            plt.bar(positions + bar_width * 3, metrics_df['True Negative (TN)'], width=bar_width, label='TN', color='blue')
+            
+            # Display percentage on top of each bar
+            for i, pos in enumerate(positions):
+                plt.text(pos, metrics_df['True Positive (TP)'][i] + 1, f"{metrics_df['TP %'][i]}%", ha='center')
+                plt.text(pos + bar_width, metrics_df['False Positive (FP)'][i] + 1, f"{metrics_df['FP %'][i]}%", ha='center')
+                plt.text(pos + bar_width * 2, metrics_df['False Negative (FN)'][i] + 1, f"{metrics_df['FN %'][i]}%", ha='center')
+                plt.text(pos + bar_width * 3, metrics_df['True Negative (TN)'][i] + 1, f"{metrics_df['TN %'][i]}%", ha='center')
+            
+            plt.xticks(positions + bar_width * 1.5, metrics_df['Class'])
+            plt.legend()
+            plt.title('TP, FP, FN, TN Breakdown by Class')
+            st.pyplot(plt)
+            
+        # Display Metrics DataFrame Preview at the Botton
+        metrics_df = pd.DataFrame(metrics_data)
+        st.subheader('Metrics DataFrame Preview')
+        st.dataframe(metrics_df, use_container_width=True)
+
+        # WordClouds Side by Side
+        st.subheader('Word Clouds of Positive and Negative Comments')
+        
+        # Creating Columns for Side by Side Display
+        col1, col2 = st.columns(2)
+
+        # Positive Word Cloud
+        with col1:
+            st.markdown("### Positive Comments")
+            positive_words = ' '.join(df[df['Sentiment'] == 'Positive']['Processed_Comment'])
+            wordcloud = WordCloud(width=600, height=400).generate(positive_words)
+            plt.figure(figsize=(6, 4))
+            plt.imshow(wordcloud, interpolation='bilinear')
+            plt.axis('off')
+            st.pyplot(plt)
+
+        # Negative Word Cloud
+        with col2:
+            st.markdown("### Negative Comments")
+            negative_words = ' '.join(df[df['Sentiment'] == 'Negative']['Processed_Comment'])
+            wordcloud = WordCloud(width=600, height=400).generate(negative_words)
+            plt.figure(figsize=(6, 4))
+            plt.imshow(wordcloud, interpolation='bilinear')
+            plt.axis('off')
+            st.pyplot(plt)
+            
+# ---- Pre-trained Spam Detection Model Loading ----
+@st.cache_resource
+def load_spam_model():
+    """
+    Load the pre-trained spam detection model and vectorizer.
+    If not available, train on sample data, save, and load it.
+    """
+    try:
+        # Check if the files exist in the current directory
+        if os.path.exists("tfidf_vectorizer.pkl") and os.path.exists("spam_detector_model.pkl"):
+            st.info("Loading pre-trained models...")
+            vectorizer = joblib.load("tfidf_vectorizer.pkl")
+            model = joblib.load("spam_detector_model.pkl")
+        else:
+            st.warning("Pre-trained models not found. Training a new model...")
+
+            # ---- Sample Spam Dataset ----
+            data = pd.read_csv(
+                "https://raw.githubusercontent.com/justmarkham/DAT8/master/data/sms.tsv",
+                sep='\t',
+                header=None
+            )
+            data.columns = ['Label', 'Message']
+
+            # ---- Vectorization ----
+            vectorizer = TfidfVectorizer(stop_words='english')
+            X = vectorizer.fit_transform(data['Message'])
+            y = data['Label'].map({'ham': 0, 'spam': 1})
+
+            # ---- Train-Test Split ----
+            from sklearn.model_selection import train_test_split
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+            # ---- Model Training ----
+            from sklearn.naive_bayes import MultinomialNB
+            model = MultinomialNB()
+            model.fit(X_train, y_train)
+
+            # ---- Saving the model for future use ----
+            joblib.dump(vectorizer, "tfidf_vectorizer.pkl")
+            joblib.dump(model, "spam_detector_model.pkl")
+
+            # ---- Model Evaluation ----
+            predictions = model.predict(X_test)
+            accuracy = accuracy_score(y_test, predictions)
+            st.success(f"Spam Detection Model trained with an accuracy of: {accuracy:.2f}")
+
+    except Exception as e:
+        st.error(f"🚫 Error loading models: {e}")
+        return None, None
+
+    return vectorizer, model
+# 🚀 Load the pre-trained model outside the main logic to optimize performance
+tfidf_vectorizer, spam_detector_model = load_spam_model()
+
+
+# ---- Enhanced Spam Detection ----
+def detect_spam(comment):
+    """
+    Use the pre-trained model to detect if a comment is spam or not.
+    """
+    comment_transformed = tfidf_vectorizer.transform([comment])
+    prediction = spam_detector_model.predict(comment_transformed)
+    return 'Spam' if prediction[0] == 1 else 'Not Spam'
+
+
+# ---- Apply the new spam detection on YouTube comments ----
+# ---- Section Header ----
+st.subheader('🚩 Detected Spam Comments')
+if 'df' in locals():
+    df['Spam'] = df['Comment'].apply(detect_spam)
+
+    # ---- Create two-column layout ----
+    col1, col2 = st.columns(2)
+    
+    # ---- Display Spam Comments in Column 1 ----
+    with col1:
+        # ---- Display Spam Comments ----
+        spam_comments = df[df['Spam'] == 'Spam']
+        
+        if not spam_comments.empty:
+            st.markdown("### 🚫 Spam Comments and Usernames")
+            st.dataframe(spam_comments[['User', 'Comment']], use_container_width=True)
+        else:
+            st.success("No spam comments detected! 🎉")
+    
+    # ---- Display Top Spam Commenters in Column 2 ----
+    with col2:
+        st.subheader('🏆 Top Spam Commenters')
+        
+        if not spam_comments.empty:
+            # ---- Top Spam Commenters ----
+            top_spammers = spam_comments['User'].value_counts().head(10).reset_index()
+            top_spammers.columns = ['Username', 'Spam Count']
+            st.dataframe(top_spammers, use_container_width=True)
+        else:
+            st.success("No spammers found! 🎉")
+        # ---- Create a new container for the visualization ----
+    st.markdown("---")  # Line separator for better visibility
+    vis_col1, vis_col2 = st.columns(2)
+
+    # ---- Visualization in Left Column ----
+    with vis_col1:
+        st.markdown("### 📊 Spam Detection Overview")
+        spam_counts = df['Spam'].value_counts()
+        fig, ax = plt.subplots(figsize=(5, 4))
+        sns.barplot(x=spam_counts.index, y=spam_counts.values, palette='Reds')
+        plt.title("Spam Detection Overview")
+        plt.ylabel('Number of Comments')
+        plt.xlabel('Comment Type')
+        st.pyplot(fig)
+    
+else:
+    st.error('Invalid YouTube URL')
