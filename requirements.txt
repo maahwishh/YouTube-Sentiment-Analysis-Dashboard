@@ -194,3 +194,11 @@ wrapt==1.17.2
 vaderSentiment
 flask
 numpy
+streamlit
+pandas
+matplotlib
+seaborn
+nltk
+google-api-python-client
+wordcloud
+scikit-learn
