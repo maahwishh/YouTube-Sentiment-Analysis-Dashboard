@@ -15,18 +15,17 @@ A modern, interactive dashboard for analyzing YouTube video comments sentiment, 
 ## Setup
 
 1. Install dependencies:
-\`\`bash
+bash
 pip install -r requirements.txt
-\`\`
+
 
 2. Get a YouTube Data API key from Google Cloud Console
 
 3. Replace the API_KEY in the code with your key
 
 4. Run the application:
-\`\`\`bash
+bash
 streamlit run app.py
-\`\`\`
 
 ## Usage
 
